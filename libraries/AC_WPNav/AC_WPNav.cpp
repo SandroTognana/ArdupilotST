@@ -170,6 +170,7 @@ AC_WPNav::AC_WPNav(const AP_InertialNav* inav, const AP_AHRS* ahrs, APM_PI* pid_
 	loiter_gain=1.0f;  // SANDRO: init loiter gain to 1.0, so loiter pid @ 100% 
     // calculate loiter leash
     calculate_loiter_leash_length();
+	loiter_reset=1;
 }
 
 ///
@@ -239,8 +240,8 @@ void AC_WPNav::init_loiter_target(const Vector3f& position, const Vector3f& velo
 
     // set last velocity to current velocity
     // To-Do: remove the line below by instead forcing reset_I to be called on the first loiter_update call
-    _vel_last = _inav->get_velocity();
-
+    //_vel_last = _inav->get_velocity();
+	loiter_reset=1;
 }
 
 /// move_loiter_target - move loiter target by velocity provided in front/right directions in cm/s
@@ -334,11 +335,11 @@ void AC_WPNav::update_loiter()
     float dt = (now - _loiter_last_update) / 1000.0f;
 
     // catch if we've just been started
-    if( dt >= 1.0 ) {
+    if ((dt>=1.0)||(loiter_reset==1)) {
         dt = 0.0;
+		loiter_reset=0;
         reset_I();
         _loiter_step = 0;
-		loiter_gain=1.0f;
     }
 
     // reset step back to 0 if 0.1 seconds has passed and we completed the last full cycle
@@ -346,11 +347,7 @@ void AC_WPNav::update_loiter()
         _loiter_step = 0;
     }
 
-	// SANDRO: loiter heartbeat on LED#1
-	// Ok, during HYBRID with sticks inside deadband, LED#1 blinks, so loiter_update is running
-	
-	
-    // run loiter steps
+	// run loiter steps
     switch (_loiter_step) {
         case 0:
             // capture time since last iteration

@@ -120,6 +120,7 @@ public:
     AP_Int16	speed_max_braking;		// the min speed in cm/s that requires full braking angle
     AP_Int16	speed_0;				// the max speed in cm/s to consider we have no more velocity for switching to loiter
 	
+	uint8_t		loiter_reset;
 	float		loiter_gain;
 		
 	//uint8_t get_loiter_mode() {return _loiter_mode;};
