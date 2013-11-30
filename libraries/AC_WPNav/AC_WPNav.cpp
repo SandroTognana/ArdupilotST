@@ -400,6 +400,7 @@ void AC_WPNav::update_loiter()
 			// output: desired_roll, desired_pitch
 			// questi due angoli poi verranno passati ai PID stabilizzatori come reference
 			
+		
 			static uint8_t stato=0;
 			cont++;
 			if (cont>10) 
@@ -829,7 +830,8 @@ void AC_WPNav::get_loiter_acceleration_to_lean_angles(float accel_lat, float acc
     accel_right = -accel_lat*_sin_yaw + accel_lon*_cos_yaw;
 
     // update angle targets that will be passed to stabilize controller
-    _desired_roll = constrain_float(fast_atan(accel_right*_cos_pitch/(-z_accel_meas))*(18000/M_PI), -_lean_angle_max_cd, _lean_angle_max_cd);
+    //_desired_roll = constrain_float(fast_atan(accel_right*_cos_pitch/(-z_accel_meas))*(18000/M_PI), -_lean_angle_max_cd, _lean_angle_max_cd);
+	_desired_roll = constrain_float(fast_atan(accel_right/(-z_accel_meas))*(18000/M_PI), -_lean_angle_max_cd, _lean_angle_max_cd);
     _desired_pitch = constrain_float(fast_atan(-accel_forward/(-z_accel_meas))*(18000/M_PI), -_lean_angle_max_cd, _lean_angle_max_cd);
 }
 

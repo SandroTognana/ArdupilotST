@@ -535,14 +535,19 @@ static int16_t brake_roll, brake_pitch; // SANDRO: used for transition from alt_
 static int32_t K_brake;					// SANDRO: proporzionalità tra velocità e frenata. Calcolata in 
 
 #ifdef MODEL_BRAKE2
-static int16_t	T0_pitch,T1_pitch,brake_pitch_count;
+static int16_t	T0_pitch,T1_pitch,brake_pitch_count,brake_pitch0;
 static uint8_t	st_brake_pitch;
 static float vel_pitch_1, pitch_delta_v;
-static int16_t	T0_roll,T1_roll,brake_roll_count;
+static int16_t	T0_roll,T1_roll,brake_roll_count,brake_roll0;
 static uint8_t	st_brake_roll;
 static float vel_roll_1, roll_delta_v;
 #endif
 
+//#define HYBRID_PID
+#ifdef HYBRID_PID
+AC_PID*		const pid_hybrid_lat;
+AC_PID*		const pid_hybrid_lon;
+#endif
 ////////////////////////////////////////////////////////////////////////////////
 // Orientation
 ////////////////////////////////////////////////////////////////////////////////
@@ -1774,17 +1779,20 @@ void update_roll_pitch_mode(void)
 				hybrid_roll_mode = 2;
 				brake_roll = 0;                 // reset brake
 				brake_roll_count=0;	 			// reset rising brake counter
-				vel_roll_1=vel_fw;		 		// starting velocity
+				vel_roll_1=vel_right;		 		// initial brake velocity
+				roll_delta_v=fabs(0.5f*vel_right);	// init speed threshold to half initial speed
 				T0_roll=0;						// reset braking timeout
 				T1_roll=0;						// reset braking time
-				st_brake_roll=0;				// init brake status
+				st_brake_roll=0;				// init brake status: increase braking angle
+				hal.gpio->write(COPTER_LED_3,1); // 
 			}
 			else
 			{
-				if(hybrid_roll_mode == 2 && abs(vel_right)<wp_nav.speed_0)	    //stick released and transition finished (speed 0) => loiter mode
+				if(hybrid_roll_mode == 2 && fabs(vel_right)<wp_nav.speed_0)	    //stick released and transition finished (speed 0) => loiter mode
 				{
 					hybrid_roll_mode = 3;          
 					if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
+					hal.gpio->write(COPTER_LED_3,0); //
 				}
 			}
 		}
@@ -1800,16 +1808,19 @@ void update_roll_pitch_mode(void)
 				hybrid_pitch_mode = 2;
 				brake_pitch = 0;                // reset brake
 				brake_pitch_count=0;	 		// reset rising brake counter
-				vel_pitch_1=vel_fw;		 		// starting velocity
+				vel_pitch_1=vel_fw;		 		// brake initial speed
+				pitch_delta_v=fabs(0.5f*vel_fw);	// init speed threshold to half initial speed
 				T0_pitch=0;						// reset braking timeout
 				T1_pitch=0;						// reset braking time
-				st_brake_pitch=0;				// init brake status
+				st_brake_pitch=0;				// init brake state
+				hal.gpio->write(COPTER_LED_2,1); // 
 			}
 			else 
 			{
-				if(hybrid_pitch_mode == 2 && abs(vel_fw)<wp_nav.speed_0)   //stick released and transition finished (speed 0) => loiter mode
+				if(hybrid_pitch_mode == 2 && fabs(vel_fw)<wp_nav.speed_0)   //stick released and transition finished (speed 0) => loiter mode
 				{ 
 					hybrid_pitch_mode = 3;
+					hal.gpio->write(COPTER_LED_2,0); //
 					if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
 				}
 			}
@@ -1838,29 +1849,36 @@ void update_roll_pitch_mode(void)
 				case 0:	// brake increase
 				{
 					brake_pitch_count++;			// update counter
+					brake_pitch0=brake_pitch;		// old value
 					if (vel_fw>=0) 
 					{
 						brake_pitch+=wp_nav.brake_rate;	// update brake (increase)
 						if (brake_pitch>wp_nav.max_braking_angle) brake_pitch=wp_nav.max_braking_angle;
-						else if (T1_pitch==0)		// increase to still/decrease transition
+						if (brake_pitch<=brake_pitch0) // increase to still/decrease transition
 						{
-							T1_pitch=brake_pitch_count;					// brake starts decreasing or stilling constant
-							pitch_delta_v=1.04*(vel_pitch_1-vel_fw);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							if (T1_pitch==0)		
+							{
+								T1_pitch=brake_pitch_count;					// brake starts decreasing or stilling constant
+								pitch_delta_v=(vel_pitch_1-vel_fw);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							}
 						}
 					}
 					else
 					{
 						brake_pitch-=wp_nav.brake_rate;	// update brake (decrease)
 						if (brake_pitch<-wp_nav.max_braking_angle) brake_pitch=-wp_nav.max_braking_angle;
-						else if (T1_pitch==0)			// increase to still/decrease transition
+						if (brake_pitch>=brake_pitch0) 	// increase to still/decrease transition
 						{
-							T1_pitch=brake_pitch_count;					// brake starts decreasing or stilling constant
-							pitch_delta_v=1.04*(vel_fw-vel_pitch_1);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							if (T1_pitch==0)			
+							{
+								T1_pitch=brake_pitch_count;					// brake starts decreasing or stilling constant
+								pitch_delta_v=(vel_fw-vel_pitch_1);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							}
 						}
 					}
-					if (abs(vel_fw)<=pitch_delta_v) // empirical but works...ask Julien!!
+					if (fabs(vel_fw)<=pitch_delta_v) 
 					{	
-						if (T0_pitch==0) T0_pitch=(110*T1_pitch)/100;		// from this time, it will reach speed_0 in about T1 seconds, so start the time-out
+						if (T0_pitch==0) T0_pitch=(11*T1_pitch)/10;		// from this time, it will reach speed_0 in about T1 sec, so start the time-out
 						st_brake_pitch=1;									// invert brake trend
 					}
 					break;
@@ -1870,6 +1888,7 @@ void update_roll_pitch_mode(void)
 					// update brake (decrease)
 					if (vel_fw>0) brake_pitch=max(brake_pitch-wp_nav.brake_rate,0);	
 					else brake_pitch= min(brake_pitch+wp_nav.brake_rate,0);	
+#ifdef ENA_LOITER_TIMEOUT					
 					// Timeout check
 					if (T0_pitch>0) T0_pitch--;	
 					else 
@@ -1877,6 +1896,7 @@ void update_roll_pitch_mode(void)
 						hybrid_pitch_mode=3;	// Timeout: force loiter for roll
 						if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
 					}
+#endif					
 					break;
 				}
 			}	
@@ -1900,29 +1920,36 @@ void update_roll_pitch_mode(void)
 				case 0:	// brake increase
 				{
 					brake_roll_count++;			// update counter
+					brake_roll0=brake_roll;		// save previous value
 					if (vel_right>=0) 
 					{
 						brake_roll+=wp_nav.brake_rate;	// update brake (increase)
 						if (brake_roll>wp_nav.max_braking_angle) brake_roll=wp_nav.max_braking_angle;
-						else if (T1_roll==0)		// increase to still/decrease transition
+						if (brake_roll<=brake_roll0)
 						{
-							T1_roll=brake_roll_count;					// brake starts decreasing or stilling constant
-							roll_delta_v=1.04*(vel_roll_1-vel_right);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							if (T1_roll==0)		// increase to still/decrease transition
+							{
+								T1_roll=brake_roll_count;					// brake starts decreasing or stilling constant
+								roll_delta_v=1.04f*(vel_roll_1-vel_right);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							}
 						}
 					}
 					else
 					{
 						brake_roll-=wp_nav.brake_rate;	// update brake (decrease)
 						if (brake_roll<-wp_nav.max_braking_angle) brake_roll=-wp_nav.max_braking_angle;
-						else if (T1_roll==0)			// increase to still/decrease transition
+						if (brake_roll>=brake_roll0)
 						{
-							T1_roll=brake_roll_count;					// brake starts decreasing or stilling constant
-							roll_delta_v=1.04*(vel_right-vel_roll_1);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							if (T1_roll==0)			// increase to still/decrease transition
+							{
+								T1_roll=brake_roll_count;					// brake starts decreasing or stilling constant
+								roll_delta_v=1.04f*(vel_right-vel_roll_1);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
+							}
 						}
 					}
-					if (abs(vel_right)<=roll_delta_v) // empirical but works...ask Julien!!
+					if (fabs(vel_right)<=roll_delta_v) 
 					{	
-						if (T0_roll==0) T0_roll=(110*T1_roll)/100;		// from this time, it will reach speed_0 in about T1 seconds, so start the time-out
+						if (T0_roll==0) T0_roll=(11*T1_roll)/10;		// from this time, it will reach speed_0 in about T1 seconds, so start the time-out
 						st_brake_roll=1;								// invert brake trend
 					}
 					break;
@@ -1932,6 +1959,7 @@ void update_roll_pitch_mode(void)
 					// update brake (decrease)
 					if (vel_right>0) brake_roll=max(brake_roll-wp_nav.brake_rate,0);	
 					else brake_roll= min(brake_roll+wp_nav.brake_rate,0);	
+#ifdef ENA_LOITER_TIMEOUT
 					// Timeout check
 					if (T0_roll>0) T0_roll--;	
 					else 
@@ -1939,6 +1967,7 @@ void update_roll_pitch_mode(void)
 						hybrid_roll_mode=3;	// Timeout: force loiter for roll
 						if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
 					}
+#endif
 					break;
 				}
 			}
@@ -1950,15 +1979,15 @@ void update_roll_pitch_mode(void)
 		// output to stabilize controllers
 		switch (hybrid_roll_mode)
 		{
-			case 1: { get_stabilize_roll(control_roll); hal.gpio->write(COPTER_LED_3,0); hal.gpio->write(COPTER_LED_2,0); break;}
-			case 2: { get_stabilize_roll(brake_roll); hal.gpio->write(COPTER_LED_3,1); hal.gpio->write(COPTER_LED_2,0); break;}
-			case 3: { get_stabilize_roll(wp_nav.get_desired_roll()); hal.gpio->write(COPTER_LED_3,0);hal.gpio->write(COPTER_LED_2,1); break;}
+			case 1: { get_stabilize_roll(control_roll); hal.gpio->write(COPTER_LED_3,0);  break;}
+			case 2: { get_stabilize_roll(brake_roll); break;}
+			case 3: { get_stabilize_roll(wp_nav.get_desired_roll()); hal.gpio->write(COPTER_LED_3,0); break;}
 		}
 		switch (hybrid_pitch_mode)
 		{
-			case 1: { get_stabilize_pitch(control_pitch); hal.gpio->write(COPTER_LED_3,0); hal.gpio->write(COPTER_LED_2,0); break;}
-			case 2: { get_stabilize_pitch(brake_pitch); hal.gpio->write(COPTER_LED_3,1); hal.gpio->write(COPTER_LED_2,0); break;}
-			case 3: { get_stabilize_pitch(wp_nav.get_desired_pitch());hal.gpio->write(COPTER_LED_3,0); hal.gpio->write(COPTER_LED_2,1); break;}
+			case 1: { get_stabilize_pitch(control_pitch);  hal.gpio->write(COPTER_LED_2,0); break;}
+			case 2: { get_stabilize_pitch(brake_pitch); break;}
+			case 3: { get_stabilize_pitch(wp_nav.get_desired_pitch());hal.gpio->write(COPTER_LED_2,0); break;}
 		}
 		break;
 		
