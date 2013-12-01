@@ -1,7 +1,10 @@
 /// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-#define MODEL_BRAKE2
+// MODEL_BRAKE1 -> brake2.m
+// MODEL_BRAKE2 -> brake4.m
+// MODEL_BRAKE3 -> brake5.m
+#define MODEL_BRAKE1
 
-#define THISFIRMWARE "ArduCopter V3.1-rc5"
+#define THISFIRMWARE "ArduCopter V3.1-rc5 BRAKE1"
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -533,6 +536,14 @@ static uint8_t hybrid_roll_mode;		// 1=alt_hold; 2=freno 3=loiter
 static uint8_t hybrid_pitch_mode;		// 1=alt_hold; 2=freno 3=loiter
 static int16_t brake_roll, brake_pitch; // SANDRO: used for transition from alt_hold to loiter in hybrid mode
 static int32_t K_brake;					// SANDRO: proporzionalità tra velocità e frenata. Calcolata in 
+
+#ifdef MODEL_BRAKE3
+static float speed_max_braking;	 // m/s -empirically evaluated but works for all configurations, set the brake_decrease at (almost) brake rate
+static uint16_t timeout_roll, timeout_pitch; 	// second - time allowed for the braking to complete, this timeout will be updated at half-braking
+static uint16_t brake_max_roll, brake_max_pitch; 	// used to detect half braking
+static uint16_t half_brake_time_roll, half_brake_time_pitch; //used to detect half braking
+static uint16_t brake_roll_count, brake_pitch_count;		// counter
+#endif
 
 #ifdef MODEL_BRAKE2
 static int16_t	T0_pitch,T1_pitch,brake_pitch_count,brake_pitch0;
@@ -1614,7 +1625,13 @@ bool set_roll_pitch_mode(uint8_t new_roll_pitch_mode)
 			{
 				// SANDRO: inizializza la deadband (per comodità)
 				deadband = wp_nav.loiter_deadband;
-				K_brake=((float)wp_nav.max_braking_angle/(float)wp_nav.speed_max_braking);	// decremento frenata
+#ifdef MODEL_BRAKE3				
+				//m/s -empirically evaluated but works for all configurations, set the brake_decrease at (almost) brake rate
+				speed_max_braking = wp_nav.max_braking_angle/(15*wp_nav.brake_rate+95); 
+				K_brake=(float)wp_nav.max_braking_angle/speed_max_braking;					// decremento frenata
+#else
+				K_brake=(float)wp_nav.max_braking_angle/(float)wp_nav.speed_max_braking;	// decremento frenata
+#endif
 				hybrid_roll_mode=3;	// loiter per partire...
 				hybrid_pitch_mode=3;	// loiter per partire...
 				roll_pitch_initialised = true;	// require gps lock
@@ -1778,12 +1795,20 @@ void update_roll_pitch_mode(void)
 			{  
 				hybrid_roll_mode = 2;
 				brake_roll = 0;                 // reset brake
+#ifdef MODEL_BRAKE2
 				brake_roll_count=0;	 			// reset rising brake counter
 				vel_roll_1=vel_right;		 		// initial brake velocity
 				roll_delta_v=fabs(0.5f*vel_right);	// init speed threshold to half initial speed
 				T0_roll=0;						// reset braking timeout
 				T1_roll=0;						// reset braking time
 				st_brake_roll=0;				// init brake status: increase braking angle
+#endif
+#ifdef MODEL_BRAKE3
+				//t_speed_0=0; 	//time to reach speed 0
+				timeout_roll=10; 	// second - init time allowed for the braking to complete, this timeout will be updated at half-braking
+				brake_max_roll=0; 		//used to detect half braking
+				half_brake_time_roll=0; 	//used to detect half braking
+#endif
 				hal.gpio->write(COPTER_LED_3,1); // 
 			}
 			else
@@ -1807,12 +1832,21 @@ void update_roll_pitch_mode(void)
 			{  
 				hybrid_pitch_mode = 2;
 				brake_pitch = 0;                // reset brake
+#ifdef MODEL_BRAKE2
 				brake_pitch_count=0;	 		// reset rising brake counter
 				vel_pitch_1=vel_fw;		 		// brake initial speed
 				pitch_delta_v=fabs(0.5f*vel_fw);	// init speed threshold to half initial speed
 				T0_pitch=0;						// reset braking timeout
 				T1_pitch=0;						// reset braking time
 				st_brake_pitch=0;				// init brake state
+#endif
+#ifdef MODEL_BRAKE3
+				//t_speed_0=0; 	//time to reach speed 0
+				brake_pitch_count=0;	 		// reset rising brake counter
+				timeout_pitch=10; 	// second - init time allowed for the braking to complete, this timeout will be updated at half-braking
+				brake_max_pitch=0; 		//used to detect half braking
+				half_brake_time_pitch=0; 	//used to detect half braking
+#endif
 				hal.gpio->write(COPTER_LED_2,1); // 
 			}
 			else 
@@ -1836,12 +1870,35 @@ void update_roll_pitch_mode(void)
 #ifdef MODEL_BRAKE1
 			if(vel_fw>=0)
 			{
-                brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*MAX_BRAKING_ANGLE/SPEED_MAX_BRAKING,MAX_BRAKING_ANGLE)); //positive pitch means go backward
+                brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*K_brake,wp_nav.max_braking_angle)); //positive pitch means go backward
             }
 			else
 			{
-                brake_pitch = max(brake_pitch-wp_nav.brake_rate,max(vel_fw*MAX_BRAKING_ANGLE/SPEED_MAX_BRAKING,-MAX_BRAKING_ANGLE));
+                brake_pitch = max(brake_pitch-wp_nav.brake_rate,max(vel_fw*K_brake,-wp_nav.max_braking_angle));
             }
+#endif
+#ifdef MODEL_BRAKE3
+			brake_pitch_count++;			// update counter
+			if(vel_fw>=0)
+			{
+                //brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*K_brake,wp_nav.max_braking_angle)); //positive pitch means go backward
+				brake_pitch = min(brake_pitch+wp_nav.brake_rate,min((K_brake*vel_fw*(1+5/(vel_fw+0.6))),wp_nav.max_braking_angle)); // centidegrees
+            }
+			else
+			{
+                //brake_pitch = max(brake_pitch-wp_nav.brake_rate,max(vel_fw*K_brake,-wp_nav.max_braking_angle));
+				brake_pitch = max(brake_pitch-wp_nav.brake_rate,max((K_brake*vel_fw*(1-(5/(vel_fw-0.6)))),-wp_nav.max_braking_angle)); // centidegrees
+            }
+			if (abs(brake_pitch)>brake_max_pitch)	// detect half braking and update timeout
+			{
+				brake_max_pitch=abs(brake_pitch);
+				half_brake_time_pitch=brake_pitch_count;
+			}
+			else 	// brake_angle decreasing
+			{
+				timeout_pitch=11*2*half_brake_time_pitch/10; // the 1.1 factor has to be tuned in flight, here it means 110% of the "normal" time.
+			}
+			// to do: check brake_pitch_count for timeout
 #endif
 #ifdef MODEL_BRAKE2
 		switch (st_brake_pitch) 	
@@ -1907,12 +1964,33 @@ void update_roll_pitch_mode(void)
 #ifdef MODEL_BRAKE1
 			if(vel_right>=0)
 			{
-                brake_roll = max(brake_roll-BRAKE_RATE,max(vel_right*K_brake,-wp_nav.max_braking_angle)); //negative roll means go left
+                brake_roll = max(brake_roll-wp_nav.brake_rate,max(vel_right*K_brake,-wp_nav.max_braking_angle)); //negative roll means go left
             }
 			else
 			{
-                brake_roll = min(brake_roll+BRAKE_RATE,min(vel_right*K_brake,wp_nav.max_braking_angle)); 
+                brake_roll = min(brake_roll+wp_nav.brake_rate,min(vel_right*K_brake,wp_nav.max_braking_angle)); 
             }
+#endif
+#ifdef MODEL_BRAKE3
+			brake_roll_count++;			// update counter
+			if(vel_right>=0)
+			{
+				brake_roll = min(brake_roll+wp_nav.brake_rate,min((K_brake*vel_right*(1+5/(vel_right+0.6))),wp_nav.max_braking_angle));
+            }
+			else
+			{
+				brake_roll = max(brake_roll-wp_nav.brake_rate,max((K_brake*vel_right*(1-5/(vel_right-0.6))),-wp_nav.max_braking_angle)); 
+            }
+			if (abs(brake_roll)>brake_max_roll)	// detect half braking and update timeout
+			{
+				brake_max_roll=abs(brake_roll);
+				half_brake_time_roll=brake_roll_count;
+			}
+			else 	// brake_angle decreasing
+			{
+				timeout_roll=11*2*half_brake_time_roll/10; // the 1.1 factor has to be tuned in flight, here it means 110% of the "normal" time.
+			}
+			// to do: check brake_roll_count for timeout
 #endif
 #ifdef MODEL_BRAKE2
 			switch (st_brake_roll) 	
