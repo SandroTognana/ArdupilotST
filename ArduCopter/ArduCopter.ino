@@ -2,9 +2,9 @@
 // MODEL_BRAKE1 -> brake2.m
 // MODEL_BRAKE2 -> brake4.m
 // MODEL_BRAKE3 -> brake5.m
-#define MODEL_BRAKE1
+#define MODEL_BRAKE3
 
-#define THISFIRMWARE "ArduCopter V3.1-rc5 BRAKE1"
+#define THISFIRMWARE "ArduCopter V3.1-rc5 BRAKE3"
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -530,12 +530,12 @@ static int16_t control_roll;
 static int16_t control_pitch;
 static uint8_t rtl_state;               // records state of rtl (initial climb, returning home, etc)
 static uint8_t land_state;              // records state of land (flying to location, descending)
-static int16_t MidRoll,MidPitch;		// SANDRO: posizione centrale degli stick
-static int16_t deadband;				// SANDRO: isteresi stick
+//static int16_t MidRoll,MidPitch;		// SANDRO: posizione centrale degli stick
+//static int16_t deadband;				// SANDRO: isteresi stick
 static uint8_t hybrid_roll_mode;		// 1=alt_hold; 2=freno 3=loiter
 static uint8_t hybrid_pitch_mode;		// 1=alt_hold; 2=freno 3=loiter
-static int16_t brake_roll, brake_pitch; // SANDRO: used for transition from alt_hold to loiter in hybrid mode
-static int32_t K_brake;					// SANDRO: proporzionalità tra velocità e frenata. Calcolata in 
+static int16_t brake_roll, brake_pitch; // 
+static int32_t K_brake;					// 
 
 #ifdef MODEL_BRAKE3
 static float speed_max_braking;	 // m/s -empirically evaluated but works for all configurations, set the brake_decrease at (almost) brake rate
@@ -1623,17 +1623,15 @@ bool set_roll_pitch_mode(uint8_t new_roll_pitch_mode)
 		case ROLL_PITCH_HYBRID:
 			if( ap.home_is_set ) 
 			{
-				// SANDRO: inizializza la deadband (per comodità)
-				deadband = wp_nav.loiter_deadband;
 #ifdef MODEL_BRAKE3				
 				//m/s -empirically evaluated but works for all configurations, set the brake_decrease at (almost) brake rate
-				speed_max_braking = wp_nav.max_braking_angle/(15*wp_nav.brake_rate+95); 
+				speed_max_braking = 100*wp_nav.max_braking_angle/(15*wp_nav.brake_rate+95); // in cm/s !!! (Julien)
 				K_brake=(float)wp_nav.max_braking_angle/speed_max_braking;					// decremento frenata
 #else
 				K_brake=(float)wp_nav.max_braking_angle/(float)wp_nav.speed_max_braking;	// decremento frenata
 #endif
-				hybrid_roll_mode=3;	// loiter per partire...
-				hybrid_pitch_mode=3;	// loiter per partire...
+				hybrid_roll_mode=3;				// loiter per partire...
+				hybrid_pitch_mode=3;			// loiter per partire...
 				roll_pitch_initialised = true;	// require gps lock
 			}
             break;
@@ -1785,7 +1783,7 @@ void update_roll_pitch_mode(void)
 		
 		//define roll/pitch modes from stick input
         //get roll stick input and update new roll mode
-        if(abs(g.rc_1.control_in) > deadband) //stick input detected => direct to stab mode
+        if(abs(g.rc_1.control_in) > wp_nav.loiter_deadband) //stick input detected => direct to stab mode
 		{ 
             hybrid_roll_mode = 1;
         }
@@ -1822,7 +1820,7 @@ void update_roll_pitch_mode(void)
 			}
 		}
 		//get pitch stick input and update new pitch mode
-        if(abs(g.rc_2.control_in) > deadband)  //stick input detected => direct to stab mode
+        if(abs(g.rc_2.control_in) > wp_nav.loiter_deadband)  //stick input detected => direct to stab mode
 		{  
             hybrid_pitch_mode = 1;
         }
@@ -1882,12 +1880,12 @@ void update_roll_pitch_mode(void)
 			if(vel_fw>=0)
 			{
                 //brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*K_brake,wp_nav.max_braking_angle)); //positive pitch means go backward
-				brake_pitch = min(brake_pitch+wp_nav.brake_rate,min((K_brake*vel_fw*(1+5/(vel_fw+0.6))),wp_nav.max_braking_angle)); // centidegrees
+				brake_pitch = min(brake_pitch+wp_nav.brake_rate,min((K_brake*vel_fw*(1+(500/(vel_fw+60)))),wp_nav.max_braking_angle)); // centidegrees
             }
 			else
 			{
                 //brake_pitch = max(brake_pitch-wp_nav.brake_rate,max(vel_fw*K_brake,-wp_nav.max_braking_angle));
-				brake_pitch = max(brake_pitch-wp_nav.brake_rate,max((K_brake*vel_fw*(1-(5/(vel_fw-0.6)))),-wp_nav.max_braking_angle)); // centidegrees
+				brake_pitch = max(brake_pitch-wp_nav.brake_rate,max((K_brake*vel_fw*(1-(500/(vel_fw-60)))),-wp_nav.max_braking_angle)); // centidegrees
             }
 			if (abs(brake_pitch)>brake_max_pitch)	// detect half braking and update timeout
 			{
@@ -1975,11 +1973,11 @@ void update_roll_pitch_mode(void)
 			brake_roll_count++;			// update counter
 			if(vel_right>=0)
 			{
-				brake_roll = min(brake_roll+wp_nav.brake_rate,min((K_brake*vel_right*(1+5/(vel_right+0.6))),wp_nav.max_braking_angle));
+				brake_roll = min(brake_roll+wp_nav.brake_rate,min((K_brake*vel_right*(1+500/(vel_right+60))),wp_nav.max_braking_angle));
             }
 			else
 			{
-				brake_roll = max(brake_roll-wp_nav.brake_rate,max((K_brake*vel_right*(1-5/(vel_right-0.6))),-wp_nav.max_braking_angle)); 
+				brake_roll = max(brake_roll-wp_nav.brake_rate,max((K_brake*vel_right*(1-500/(vel_right-60))),-wp_nav.max_braking_angle)); 
             }
 			if (abs(brake_roll)>brake_max_roll)	// detect half braking and update timeout
 			{
