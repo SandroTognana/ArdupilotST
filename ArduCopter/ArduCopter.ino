@@ -530,35 +530,18 @@ static int16_t control_roll;
 static int16_t control_pitch;
 static uint8_t rtl_state;               // records state of rtl (initial climb, returning home, etc)
 static uint8_t land_state;              // records state of land (flying to location, descending)
-//static int16_t MidRoll,MidPitch;		// SANDRO: posizione centrale degli stick
-//static int16_t deadband;				// SANDRO: isteresi stick
-static uint8_t hybrid_roll_mode;		// 1=alt_hold; 2=freno 3=loiter
-static uint8_t hybrid_pitch_mode;		// 1=alt_hold; 2=freno 3=loiter
+
+static uint8_t hybrid_mode_roll;		// 1=alt_hold; 2=freno 3=loiter
+static uint8_t hybrid_mode_pitch;		// 1=alt_hold; 2=freno 3=loiter
 static int16_t brake_roll, brake_pitch; // 
 static int32_t K_brake;					// 
 
-#ifdef MODEL_BRAKE3
 static float speed_max_braking;	 // m/s -empirically evaluated but works for all configurations, set the brake_decrease at (almost) brake rate
-static uint16_t timeout_roll, timeout_pitch; 	// second - time allowed for the braking to complete, this timeout will be updated at half-braking
+static uint16_t timeout_roll, timeout_pitch; 	// seconds - time allowed for the braking to complete, this timeout will be updated at half-braking
 static uint16_t brake_max_roll, brake_max_pitch; 	// used to detect half braking
 static uint16_t half_brake_time_roll, half_brake_time_pitch; //used to detect half braking
-static uint16_t brake_roll_count, brake_pitch_count;		// counter
-#endif
+static uint16_t brake_count_roll, brake_count_pitch;		// counter
 
-#ifdef MODEL_BRAKE2
-static int16_t	T0_pitch,T1_pitch,brake_pitch_count,brake_pitch0;
-static uint8_t	st_brake_pitch;
-static float vel_pitch_1, pitch_delta_v;
-static int16_t	T0_roll,T1_roll,brake_roll_count,brake_roll0;
-static uint8_t	st_brake_roll;
-static float vel_roll_1, roll_delta_v;
-#endif
-
-//#define HYBRID_PID
-#ifdef HYBRID_PID
-AC_PID*		const pid_hybrid_lat;
-AC_PID*		const pid_hybrid_lon;
-#endif
 ////////////////////////////////////////////////////////////////////////////////
 // Orientation
 ////////////////////////////////////////////////////////////////////////////////
@@ -1622,16 +1605,12 @@ bool set_roll_pitch_mode(uint8_t new_roll_pitch_mode)
             break;
 		case ROLL_PITCH_HYBRID:
 			if( ap.home_is_set ) 
-			{
-#ifdef MODEL_BRAKE3				
+			{			
 				//m/s -empirically evaluated but works for all configurations, set the brake_decrease at (almost) brake rate
-				speed_max_braking = 100*wp_nav.max_braking_angle/(15*wp_nav.brake_rate+95); // in cm/s !!! (Julien)
+				speed_max_braking = 100.0f*(float)wp_nav.max_braking_angle/(15.0f*(float)wp_nav.brake_rate+95.0f); // in cm/s !!! (Julien)
 				K_brake=(float)wp_nav.max_braking_angle/speed_max_braking;					// decremento frenata
-#else
-				K_brake=(float)wp_nav.max_braking_angle/(float)wp_nav.speed_max_braking;	// decremento frenata
-#endif
-				hybrid_roll_mode=3;				// loiter per partire...
-				hybrid_pitch_mode=3;			// loiter per partire...
+				hybrid_mode_roll=3;				// loiter per partire...
+				hybrid_mode_pitch=3;			// loiter per partire...
 				roll_pitch_initialised = true;	// require gps lock
 			}
             break;
@@ -1785,35 +1764,26 @@ void update_roll_pitch_mode(void)
         //get roll stick input and update new roll mode
         if(abs(g.rc_1.control_in) > wp_nav.loiter_deadband) //stick input detected => direct to stab mode
 		{ 
-            hybrid_roll_mode = 1;
+            hybrid_mode_roll = 1;
         }
 		else 
 		{
-			if(hybrid_roll_mode == 1)	  //stick released from stab => transition mode
+			if(hybrid_mode_roll == 1)	  //stick released from stab => transition mode
 			{  
-				hybrid_roll_mode = 2;
-				brake_roll = 0;                 // reset brake
-#ifdef MODEL_BRAKE2
-				brake_roll_count=0;	 			// reset rising brake counter
-				vel_roll_1=vel_right;		 		// initial brake velocity
-				roll_delta_v=fabs(0.5f*vel_right);	// init speed threshold to half initial speed
-				T0_roll=0;						// reset braking timeout
-				T1_roll=0;						// reset braking time
-				st_brake_roll=0;				// init brake status: increase braking angle
-#endif
-#ifdef MODEL_BRAKE3
-				//t_speed_0=0; 	//time to reach speed 0
-				timeout_roll=10; 	// second - init time allowed for the braking to complete, this timeout will be updated at half-braking
-				brake_max_roll=0; 		//used to detect half braking
+				hybrid_mode_roll = 2;
+				brake_roll = 0;         // reset brake
+				timeout_roll=2000; 		// seconds*0.01 - time allowed for the braking to complete, updated at half-braking
+				brake_max_roll=0; 		// used to detect half braking
 				half_brake_time_roll=0; 	//used to detect half braking
-#endif
 				hal.gpio->write(COPTER_LED_3,1); // 
 			}
 			else
 			{
-				if(hybrid_roll_mode == 2 && fabs(vel_right)<wp_nav.speed_0)	    //stick released and transition finished (speed 0) => loiter mode
+				// manage timeout
+				if (timeout_roll>0) timeout_roll--;
+				if ((hybrid_mode_roll == 2) && ((timeout_roll==0) || (fabs(vel_right)<wp_nav.speed_0)))	 //stick released and transition finished (speed 0) => loiter mode
 				{
-					hybrid_roll_mode = 3;          
+					hybrid_mode_roll = 3;          
 					if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
 					hal.gpio->write(COPTER_LED_3,0); //
 				}
@@ -1822,244 +1792,94 @@ void update_roll_pitch_mode(void)
 		//get pitch stick input and update new pitch mode
         if(abs(g.rc_2.control_in) > wp_nav.loiter_deadband)  //stick input detected => direct to stab mode
 		{  
-            hybrid_pitch_mode = 1;
+            hybrid_mode_pitch = 1;
         }
 		else 
 		{
-			if(hybrid_pitch_mode == 1)	//stick released from stab => transition mode
+			if(hybrid_mode_pitch == 1)	//stick released from stab => transition mode
 			{  
-				hybrid_pitch_mode = 2;
-				brake_pitch = 0;                // reset brake
-#ifdef MODEL_BRAKE2
-				brake_pitch_count=0;	 		// reset rising brake counter
-				vel_pitch_1=vel_fw;		 		// brake initial speed
-				pitch_delta_v=fabs(0.5f*vel_fw);	// init speed threshold to half initial speed
-				T0_pitch=0;						// reset braking timeout
-				T1_pitch=0;						// reset braking time
-				st_brake_pitch=0;				// init brake state
-#endif
-#ifdef MODEL_BRAKE3
-				//t_speed_0=0; 	//time to reach speed 0
-				brake_pitch_count=0;	 		// reset rising brake counter
-				timeout_pitch=10; 	// second - init time allowed for the braking to complete, this timeout will be updated at half-braking
-				brake_max_pitch=0; 		//used to detect half braking
-				half_brake_time_pitch=0; 	//used to detect half braking
-#endif
+				hybrid_mode_pitch = 2;
+				brake_pitch = 0;        // reset brake
+				brake_count_pitch=0;	// reset rising brake counter
+				timeout_pitch=2000;		// seconds*0.01 - time allowed for the braking to complete, updated at half-braking
+				brake_max_pitch=0; 		// used to detect half braking
+				half_brake_time_pitch=0; 	// half braking time
 				hal.gpio->write(COPTER_LED_2,1); // 
 			}
 			else 
 			{
-				if(hybrid_pitch_mode == 2 && fabs(vel_fw)<wp_nav.speed_0)   //stick released and transition finished (speed 0) => loiter mode
+				// manage timeout
+				if (timeout_pitch>0) timeout_pitch--;
+				if ((hybrid_mode_pitch == 2) && ((timeout_pitch==0) || (fabs(vel_fw)<wp_nav.speed_0)))   //stick released and transition finished (speed 0) => loiter mode
 				{ 
-					hybrid_pitch_mode = 3;
+					hybrid_mode_pitch = 3;
 					hal.gpio->write(COPTER_LED_2,0); //
 					if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
 				}
 			}
         }
-		// limita e scala l'input degli stick
-		if(hybrid_roll_mode == 1 || hybrid_pitch_mode == 1)
+		// limit and scale stick input 
+		if(hybrid_mode_roll == 1 || hybrid_mode_pitch == 1)
 		{
             get_pilot_desired_lean_angles(g.rc_1.control_in, g.rc_2.control_in, control_roll, control_pitch);
         }
 		// braking update
-		if (hybrid_pitch_mode==2)
+		if (hybrid_mode_pitch==2)
 		{
-#ifdef MODEL_BRAKE1
+			brake_count_pitch++;			// update counter
 			if(vel_fw>=0)
 			{
-                brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*K_brake,wp_nav.max_braking_angle)); //positive pitch means go backward
-            }
-			else
-			{
-                brake_pitch = max(brake_pitch-wp_nav.brake_rate,max(vel_fw*K_brake,-wp_nav.max_braking_angle));
-            }
-#endif
-#ifdef MODEL_BRAKE3
-			brake_pitch_count++;			// update counter
-			if(vel_fw>=0)
-			{
-                //brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*K_brake,wp_nav.max_braking_angle)); //positive pitch means go backward
-				brake_pitch = min(brake_pitch+wp_nav.brake_rate,min((K_brake*vel_fw*(1+(500/(vel_fw+60)))),wp_nav.max_braking_angle)); // centidegrees
+                //brake_pitch = min(brake_pitch+wp_nav.brake_rate,min(vel_fw*K_brake,wp_nav.max_braking_angle)); 
+				//positive pitch means go backward
+				brake_pitch = min(brake_pitch+wp_nav.brake_rate,min((K_brake*vel_fw*(1.0f+(500.0f/(vel_fw+60.0f)))),wp_nav.max_braking_angle)); // centidegrees
             }
 			else
 			{
                 //brake_pitch = max(brake_pitch-wp_nav.brake_rate,max(vel_fw*K_brake,-wp_nav.max_braking_angle));
-				brake_pitch = max(brake_pitch-wp_nav.brake_rate,max((K_brake*vel_fw*(1-(500/(vel_fw-60)))),-wp_nav.max_braking_angle)); // centidegrees
+				brake_pitch = max(brake_pitch-wp_nav.brake_rate,max((K_brake*vel_fw*(1.0f-(500.0f/(vel_fw-60.0f)))),-wp_nav.max_braking_angle)); // centidegrees
             }
 			if (abs(brake_pitch)>brake_max_pitch)	// detect half braking and update timeout
 			{
 				brake_max_pitch=abs(brake_pitch);
-				half_brake_time_pitch=brake_pitch_count;
+				half_brake_time_pitch=brake_count_pitch;
 			}
-			else 	// brake_angle decreasing
+			else 	
 			{
-				timeout_pitch=11*2*half_brake_time_pitch/10; // the 1.1 factor has to be tuned in flight, here it means 110% of the "normal" time.
+				timeout_pitch=(uint16_t)(11L*2L*(long)half_brake_time_pitch/10L); // the 1.1 factor has to be tuned in flight, here it means 110% of the "normal" time.
 			}
-			// to do: check brake_pitch_count for timeout
-#endif
-#ifdef MODEL_BRAKE2
-		switch (st_brake_pitch) 	
-			{
-				case 0:	// brake increase
-				{
-					brake_pitch_count++;			// update counter
-					brake_pitch0=brake_pitch;		// old value
-					if (vel_fw>=0) 
-					{
-						brake_pitch+=wp_nav.brake_rate;	// update brake (increase)
-						if (brake_pitch>wp_nav.max_braking_angle) brake_pitch=wp_nav.max_braking_angle;
-						if (brake_pitch<=brake_pitch0) // increase to still/decrease transition
-						{
-							if (T1_pitch==0)		
-							{
-								T1_pitch=brake_pitch_count;					// brake starts decreasing or stilling constant
-								pitch_delta_v=(vel_pitch_1-vel_fw);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
-							}
-						}
-					}
-					else
-					{
-						brake_pitch-=wp_nav.brake_rate;	// update brake (decrease)
-						if (brake_pitch<-wp_nav.max_braking_angle) brake_pitch=-wp_nav.max_braking_angle;
-						if (brake_pitch>=brake_pitch0) 	// increase to still/decrease transition
-						{
-							if (T1_pitch==0)			
-							{
-								T1_pitch=brake_pitch_count;					// brake starts decreasing or stilling constant
-								pitch_delta_v=(vel_fw-vel_pitch_1);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
-							}
-						}
-					}
-					if (fabs(vel_fw)<=pitch_delta_v) 
-					{	
-						if (T0_pitch==0) T0_pitch=(11*T1_pitch)/10;		// from this time, it will reach speed_0 in about T1 sec, so start the time-out
-						st_brake_pitch=1;									// invert brake trend
-					}
-					break;
-				}
-				case 1: 	// brake decrease
-				{
-					// update brake (decrease)
-					if (vel_fw>0) brake_pitch=max(brake_pitch-wp_nav.brake_rate,0);	
-					else brake_pitch= min(brake_pitch+wp_nav.brake_rate,0);	
-#ifdef ENA_LOITER_TIMEOUT					
-					// Timeout check
-					if (T0_pitch>0) T0_pitch--;	
-					else 
-					{
-						hybrid_pitch_mode=3;	// Timeout: force loiter for roll
-						if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
-					}
-#endif					
-					break;
-				}
-			}	
-#endif
 		}
-		if (hybrid_roll_mode==2)
+		if (hybrid_mode_roll==2)
 		{
-#ifdef MODEL_BRAKE1
+			brake_count_roll++;			// update counter
 			if(vel_right>=0)
 			{
-                brake_roll = max(brake_roll-wp_nav.brake_rate,max(vel_right*K_brake,-wp_nav.max_braking_angle)); //negative roll means go left
+				brake_roll = min(brake_roll+wp_nav.brake_rate,min((K_brake*vel_right*(1.0f+500.0f/(vel_right+60.0f))),wp_nav.max_braking_angle));
             }
 			else
 			{
-                brake_roll = min(brake_roll+wp_nav.brake_rate,min(vel_right*K_brake,wp_nav.max_braking_angle)); 
-            }
-#endif
-#ifdef MODEL_BRAKE3
-			brake_roll_count++;			// update counter
-			if(vel_right>=0)
-			{
-				brake_roll = min(brake_roll+wp_nav.brake_rate,min((K_brake*vel_right*(1+500/(vel_right+60))),wp_nav.max_braking_angle));
-            }
-			else
-			{
-				brake_roll = max(brake_roll-wp_nav.brake_rate,max((K_brake*vel_right*(1-500/(vel_right-60))),-wp_nav.max_braking_angle)); 
+				brake_roll = max(brake_roll-wp_nav.brake_rate,max((K_brake*vel_right*(1.0f-500.0f/(vel_right-60.0f))),-wp_nav.max_braking_angle)); 
             }
 			if (abs(brake_roll)>brake_max_roll)	// detect half braking and update timeout
 			{
 				brake_max_roll=abs(brake_roll);
-				half_brake_time_roll=brake_roll_count;
+				half_brake_time_roll=brake_count_roll;
 			}
-			else 	// brake_angle decreasing
+			else 	
 			{
-				timeout_roll=11*2*half_brake_time_roll/10; // the 1.1 factor has to be tuned in flight, here it means 110% of the "normal" time.
+				timeout_roll=(uint16_t)(11L*2L*(long)half_brake_time_roll/10L); // the 1.1 factor has to be tuned in flight, here it means 110% of the "normal" time.
 			}
-			// to do: check brake_roll_count for timeout
-#endif
-#ifdef MODEL_BRAKE2
-			switch (st_brake_roll) 	
-			{
-				case 0:	// brake increase
-				{
-					brake_roll_count++;			// update counter
-					brake_roll0=brake_roll;		// save previous value
-					if (vel_right>=0) 
-					{
-						brake_roll+=wp_nav.brake_rate;	// update brake (increase)
-						if (brake_roll>wp_nav.max_braking_angle) brake_roll=wp_nav.max_braking_angle;
-						if (brake_roll<=brake_roll0)
-						{
-							if (T1_roll==0)		// increase to still/decrease transition
-							{
-								T1_roll=brake_roll_count;					// brake starts decreasing or stilling constant
-								roll_delta_v=1.04f*(vel_roll_1-vel_right);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
-							}
-						}
-					}
-					else
-					{
-						brake_roll-=wp_nav.brake_rate;	// update brake (decrease)
-						if (brake_roll<-wp_nav.max_braking_angle) brake_roll=-wp_nav.max_braking_angle;
-						if (brake_roll>=brake_roll0)
-						{
-							if (T1_roll==0)			// increase to still/decrease transition
-							{
-								T1_roll=brake_roll_count;					// brake starts decreasing or stilling constant
-								roll_delta_v=1.04f*(vel_right-vel_roll_1);	// velocity reduction from t=0 to t=T1: brake_rate has to start decreasing from this speed to reach zero in T1 sec.
-							}
-						}
-					}
-					if (fabs(vel_right)<=roll_delta_v) 
-					{	
-						if (T0_roll==0) T0_roll=(11*T1_roll)/10;		// from this time, it will reach speed_0 in about T1 seconds, so start the time-out
-						st_brake_roll=1;								// invert brake trend
-					}
-					break;
-				}
-				case 1: 	// brake decrease
-				{
-					// update brake (decrease)
-					if (vel_right>0) brake_roll=max(brake_roll-wp_nav.brake_rate,0);	
-					else brake_roll= min(brake_roll+wp_nav.brake_rate,0);	
-#ifdef ENA_LOITER_TIMEOUT
-					// Timeout check
-					if (T0_roll>0) T0_roll--;	
-					else 
-					{
-						hybrid_roll_mode=3;	// Timeout: force loiter for roll
-						if(nav_mode == NAV_LOITER) wp_nav.init_loiter_target(inertial_nav.get_position(), inertial_nav.get_velocity());
-					}
-#endif
-					break;
-				}
-			}
-#endif
 		}		
-		if ((hybrid_pitch_mode==3)||(hybrid_roll_mode==3)) set_nav_mode(NAV_LOITER);
+		if ((hybrid_mode_pitch==3)||(hybrid_mode_roll==3)) set_nav_mode(NAV_LOITER);
 		else set_nav_mode(NAV_NONE);
 		
 		// output to stabilize controllers
-		switch (hybrid_roll_mode)
+		switch (hybrid_mode_roll)
 		{
 			case 1: { get_stabilize_roll(control_roll); hal.gpio->write(COPTER_LED_3,0);  break;}
 			case 2: { get_stabilize_roll(brake_roll); break;}
 			case 3: { get_stabilize_roll(wp_nav.get_desired_roll()); hal.gpio->write(COPTER_LED_3,0); break;}
 		}
-		switch (hybrid_pitch_mode)
+		switch (hybrid_mode_pitch)
 		{
 			case 1: { get_stabilize_pitch(control_pitch);  hal.gpio->write(COPTER_LED_2,0); break;}
 			case 2: { get_stabilize_pitch(brake_pitch); break;}
